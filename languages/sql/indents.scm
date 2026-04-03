@@ -27,8 +27,5 @@
 
 (keyword_end) @outdent
 
-(select
-    (where_clause)) @indent
-
 (case) @indent
 (keyword_end) @outdent
