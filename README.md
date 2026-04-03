@@ -1,5 +1,8 @@
 # zed-sql-tools
 
+[![Release](https://img.shields.io/github/v/release/kidkender/zed-sql-tools)](https://github.com/kidkender/zed-sql-tools/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/kidkender/zed-sql-tools/release.yml?label=build)](https://github.com/kidkender/zed-sql-tools/actions/workflows/release.yml)
+
 SQL extension for [Zed](https://zed.dev) with formatting and linting — no external CLI tools required.
 
 ## Features
