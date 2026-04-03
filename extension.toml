@@ -1,0 +1,15 @@
+id = "zed-sql-tools"
+name = "SQL Tools"
+schema_version = 1
+version = "0.1.0"
+authors = ["kidkender"]
+description = "SQL language support with AST-based formatting and linting."
+repository = "https://github.com/kidkender/zed-sql-tools"
+
+[grammars.sql]
+repository = "https://github.com/DerekStride/tree-sitter-sql"
+commit = "4a99c73f5384f2be10adc55208c84d95a7eb1137"
+
+[language_servers.sql-tools]
+name = "sql-tools"
+languages = ["SQL"]
