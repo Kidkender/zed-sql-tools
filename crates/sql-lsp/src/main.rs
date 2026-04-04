@@ -38,5 +38,8 @@ fn main() {
 
     handlers::run(&connection);
 
+    // Drop connection before joining so the writer IO thread sees the sender
+    // channel close and exits cleanly — avoids a deadlock on io_threads.join().
+    drop(connection);
     io_threads.join().expect("io threads failed");
 }

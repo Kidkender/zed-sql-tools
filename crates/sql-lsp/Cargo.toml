@@ -19,3 +19,7 @@ tree-sitter-sequel = { git = "https://github.com/DerekStride/tree-sitter-sql", r
 [[bin]]
 name = "ast-dump"
 path = "src/bin/ast_dump.rs"
+
+[[bin]]
+name = "lsp-test"
+path = "src/bin/lsp_test.rs"
