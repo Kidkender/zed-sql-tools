@@ -51,6 +51,142 @@ fn walk(node: &Node, src: &[u8], diags: &mut Vec<Diagnostic>) {
             }
         }
 
+        // DELETE FROM users → `where` is inside the `from` child, not `delete` directly.
+        "statement" => {
+            let mut cur = node.walk();
+            let children: Vec<_> = node.children(&mut cur).collect();
+            let is_delete = children.iter().any(|c| c.kind() == "delete");
+            if is_delete {
+                let has_where = children.iter().any(|c| {
+                    if c.kind() == "from" {
+                        let mut cur2 = c.walk();
+                        c.children(&mut cur2).any(|gc| gc.kind() == "where")
+                    } else {
+                        false
+                    }
+                });
+                if !has_where {
+                    diags.push(Diagnostic {
+                        line: node.start_position().row as u32,
+                        col: node.start_position().column as u32,
+                        message: "DELETE without WHERE clause — this will delete all rows"
+                            .to_string(),
+                        is_error: false,
+                    });
+                }
+            }
+        }
+
+        // SELECT * → warn to use explicit columns
+        "all_fields" => {
+            diags.push(Diagnostic {
+                line: node.start_position().row as u32,
+                col: node.start_position().column as u32,
+                message: "Avoid SELECT *, specify columns explicitly".to_string(),
+                is_error: false,
+            });
+        }
+
+        // LIMIT without ORDER BY → pagination gives inconsistent results
+        "from" => {
+            let mut cur = node.walk();
+            let children: Vec<_> = node.children(&mut cur).collect();
+            let has_limit = children.iter().any(|c| c.kind() == "limit");
+            let has_order = children.iter().any(|c| c.kind() == "order_by");
+            if has_limit && !has_order {
+                let limit_node = children.iter().find(|c| c.kind() == "limit").unwrap();
+                diags.push(Diagnostic {
+                    line: limit_node.start_position().row as u32,
+                    col: limit_node.start_position().column as u32,
+                    message: "LIMIT without ORDER BY may produce inconsistent results".to_string(),
+                    is_error: false,
+                });
+            }
+        }
+
+        // Subquery in FROM without alias → some DBs require it, always confusing
+        "relation" => {
+            let mut cur = node.walk();
+            let children: Vec<_> = node.children(&mut cur).collect();
+            let has_subquery = children.iter().any(|c| c.kind() == "subquery");
+            let has_alias = children.iter().any(|c| c.kind() == "identifier");
+            if has_subquery && !has_alias {
+                diags.push(Diagnostic {
+                    line: node.start_position().row as u32,
+                    col: node.start_position().column as u32,
+                    message: "Subquery in FROM must have an alias (AS name)".to_string(),
+                    is_error: false,
+                });
+            }
+        }
+
+        // `col = NULL` → should be `col IS NULL`
+        // `col IN ()` → empty IN list always false
+        // `literal = literal` → always true/false, likely debug code left in
+        "binary_expression" => {
+            let mut cur = node.walk();
+            let children: Vec<_> = node.children(&mut cur).collect();
+
+            let has_eq = children.iter().any(|c| c.kind() == "=");
+            let has_null_rhs = children.iter().any(|c| {
+                if c.kind() == "literal" {
+                    let mut cur2 = c.walk();
+                    c.children(&mut cur2).any(|gc| gc.kind() == "keyword_null")
+                } else {
+                    false
+                }
+            });
+            if has_eq && has_null_rhs {
+                diags.push(Diagnostic {
+                    line: node.start_position().row as u32,
+                    col: node.start_position().column as u32,
+                    message: "Use IS NULL / IS NOT NULL instead of = NULL".to_string(),
+                    is_error: true,
+                });
+            }
+
+            let has_in = children.iter().any(|c| c.kind() == "keyword_in");
+            let has_empty_list = children.iter().any(|c| {
+                if c.kind() == "list" {
+                    // list with only `(` and `)` → empty
+                    let mut cur2 = c.walk();
+                    let items: Vec<_> = c.children(&mut cur2).collect();
+                    items.len() == 2
+                        && items[0].kind() == "("
+                        && items[1].kind() == ")"
+                } else {
+                    false
+                }
+            });
+            if has_in && has_empty_list {
+                diags.push(Diagnostic {
+                    line: node.start_position().row as u32,
+                    col: node.start_position().column as u32,
+                    message: "IN () with empty list — condition is always false".to_string(),
+                    is_error: true,
+                });
+            }
+
+            // `1 = 1`, `'x' = 'x'` → literal compared to literal, likely debug code
+            let literal_children: Vec<_> = children.iter().filter(|c| c.kind() == "literal").collect();
+            let has_eq_op = children.iter().any(|c| c.kind() == "=");
+            if has_eq_op && literal_children.len() == 2 {
+                let lhs = literal_children[0].utf8_text(src).unwrap_or("").trim();
+                let rhs = literal_children[1].utf8_text(src).unwrap_or("").trim();
+                if lhs.eq_ignore_ascii_case(rhs) {
+                    diags.push(Diagnostic {
+                        line: node.start_position().row as u32,
+                        col: node.start_position().column as u32,
+                        message: format!(
+                            "Condition '{} = {}' is always true — likely debug code",
+                            lhs, rhs
+                        ),
+                        is_error: false,
+                    });
+                }
+            }
+        }
+
         // SELECT FROM users → grammar parses `FROM users` as the expression.
         // catch it by checking if the expression text starts with a clause keyword.
         "select_expression" => {
@@ -72,51 +208,5 @@ fn walk(node: &Node, src: &[u8], diags: &mut Vec<Diagnostic>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk(&child, src, diags);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_empty_where_is_error() {
-        let diags = lint_sql("SELECT * FROM users WHERE");
-        assert!(!diags.is_empty(), "should detect bare WHERE");
-        assert!(diags.iter().any(|d| d.is_error));
-    }
-
-    #[test]
-    fn test_update_without_where_is_warning() {
-        let diags = lint_sql("UPDATE users SET name = 'x'");
-        assert!(!diags.is_empty());
-        let w = diags.iter().find(|d| !d.is_error).unwrap();
-        assert!(w.message.contains("WHERE"));
-    }
-
-    #[test]
-    fn test_update_with_where_no_warning() {
-        let diags = lint_sql("UPDATE users SET name = 'x' WHERE id = 1");
-        let warnings: Vec<_> = diags.iter().filter(|d| !d.is_error).collect();
-        assert!(warnings.is_empty(), "no warning expected: {:?}", warnings.iter().map(|d| &d.message).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn test_select_missing_columns() {
-        let diags = lint_sql("SELECT FROM users");
-        assert!(!diags.is_empty(), "should detect missing columns");
-        assert!(diags.iter().any(|d| d.message.contains("column")));
-    }
-
-    #[test]
-    fn test_valid_select_no_errors() {
-        let diags = lint_sql("SELECT id, name FROM users WHERE id = 1");
-        assert!(diags.is_empty(), "should be clean: {:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn test_valid_insert_no_errors() {
-        let diags = lint_sql("INSERT INTO users (name) VALUES ('test')");
-        assert!(diags.is_empty());
     }
 }

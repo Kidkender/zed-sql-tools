@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0] - 2026-04-07
+
+### Added
+- 7 new linter rules:
+  - `DELETE` without `WHERE` — warns before deleting all rows
+  - `SELECT *` — warns to specify columns explicitly
+  - `= NULL` comparison — error, should use `IS NULL` / `IS NOT NULL`
+  - `IN ()` empty list — error, condition is always false
+  - `LIMIT` without `ORDER BY` — warns about inconsistent pagination results
+  - `WHERE 1 = 1` — warns about always-true condition (debug code left in)
+  - Subquery in `FROM` without alias — warns for clarity and DB compatibility
+- Linter tests moved to `crates/sql-lsp/tests/linter_tests.rs` (separate from source)
+- README: added Syntax Checking section and full Linter rule documentation
+
 ## [0.2.1] - 2026-04-04
 
 ### Changed
