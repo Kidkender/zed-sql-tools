@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0] - 2026-04-13
+
+### Fixed
+- `DELETE FROM ... WHERE ...` was corrupted to `SELECT * FROM  WHERE ...` by the formatter — `DELETE` statements are now preserved as-is
+- `LIMIT $n OFFSET $n` with query parameters was silently dropped by the formatter and reported as a false positive syntax error by the linter — both now handle this grammar limitation correctly
+- `RETURNING *` was silently dropped from `INSERT` and `UPDATE` statements after formatting
+- `SELECT EXISTS(...)` produced a dangling bare `FROM` clause after formatting
+- `SELECT EXISTS(...)` with a multiline subquery was incorrectly split into `SELECT\n    EXISTS(` — the subquery now stays inline with `SELECT`
+- Blank line between query blocks was placed *after* comments instead of *before* them, breaking sqlc-style files
+- Semicolons were lost on queries where `LIMIT $n OFFSET $n` caused a program-level parse error
+
+### Added
+- `format-file` dev binary: `cargo run -p sql-lsp --bin format-file -- file.sql` to test the formatter on real SQL files
+- Regression tests for all 7 fixed bugs (formatter, linter, and LSP integration)
+
 ## [0.3.0] - 2026-04-07
 
 ### Added
