@@ -65,8 +65,26 @@ pub fn format_sql(source: &str) -> String {
                 }
                 last_stmt_end_row = None;
             }
-            ";" => {}
-            _ => {}
+            ";" => {
+                // Always mark the last statement as having a semicolon. This covers
+                // the case where an ERROR node (e.g. LIMIT $n OFFSET $n) was inserted
+                // between the statement and its ";" at the program level, causing the
+                // earlier has_semi look-ahead to miss it.
+                if let Some(last) = items.last_mut() {
+                    last.1 = true;
+                }
+            }
+            _ => {
+                // Grammar limitation: some valid SQL (e.g. `LIMIT $n OFFSET $n` with
+                // parameters) produces an ERROR node at the program level. Append it
+                // to the previous statement so it isn't silently dropped.
+                if child.is_error() && !items.is_empty() {
+                    let err_text = text(child, src);
+                    let last = items.last_mut().unwrap();
+                    last.0.push('\n');
+                    last.0.push_str(err_text.trim());
+                }
+            }
         }
         i += 1;
     }
@@ -74,8 +92,17 @@ pub fn format_sql(source: &str) -> String {
     let mut out = String::new();
     for (idx, (content, has_semi, inline_comment)) in items.iter().enumerate() {
         if idx > 0 {
+            // Blank line between a statement/block and the next item, but NOT
+            // between a comment and its following statement: the blank line belongs
+            // *before* the comment (after the previous statement), so that sqlc-style
+            // files render as:
+            //   SELECT ...;          ← statement
+            //                        ← blank line before comment
+            //   -- name: Foo :many   ← comment
+            //   SELECT ...;          ← statement immediately after comment
+            let prev_is_comment = items[idx - 1].0.starts_with("--");
             out.push('\n');
-            if !content.starts_with("--") {
+            if !prev_is_comment {
                 out.push('\n');
             }
         }
@@ -101,11 +128,38 @@ fn format_statement(node: &Node, src: &[u8]) -> String {
         return text(node, src);
     }
 
+    // DELETE statements: fall back to raw text (formatter has no DELETE handler;
+    // without this guard the "from" child triggers format_select_stmt, corrupting
+    // DELETE INTO SELECT * FROM WHERE ...).
+    if children.iter().any(|n| n.kind() == "delete") {
+        return text(node, src);
+    }
+
+    // Collect optional RETURNING clause (sibling to insert/update inside statement).
+    let returning_text = children
+        .iter()
+        .find(|n| n.kind() == "returning")
+        .map(|n| text(n, src));
+
     for child in &children {
         match child.kind() {
             "select" | "from" => return format_select_stmt(&children, src),
-            "update" => return format_update_stmt(child, src),
-            "insert" => return format_insert_stmt(child, src),
+            "update" => {
+                let mut out = format_update_stmt(child, src);
+                if let Some(ret) = &returning_text {
+                    out.push('\n');
+                    out.push_str(ret);
+                }
+                return out;
+            }
+            "insert" => {
+                let mut out = format_insert_stmt(child, src);
+                if let Some(ret) = &returning_text {
+                    out.push('\n');
+                    out.push_str(ret);
+                }
+                return out;
+            }
             _ => {}
         }
     }
@@ -186,9 +240,15 @@ fn format_select_stmt(siblings: &[Node], src: &[u8]) -> String {
         }
     }
 
-    // RULE 2: multiple columns or function call → indented multiline SELECT
-    let multi_column = columns.len() > 1
-        || columns.first().map(|c| c.contains('(')).unwrap_or(false);
+    // RULE 2: multiple columns or simple function call → indented multiline SELECT.
+    // Exception: a single column whose text is already multiline (e.g. EXISTS with an
+    // inline subquery) must stay on the SELECT line — splitting it produces broken
+    // indentation like "SELECT\n    EXISTS(\nSELECT 1\n...".
+    let single_col_is_multiline = columns.len() == 1
+        && columns[0].contains('\n');
+    let multi_column = (columns.len() > 1
+        || columns.first().map(|c| c.contains('(')).unwrap_or(false))
+        && !single_col_is_multiline;
 
     // RULE 4: complex WHERE detection
     let complex_where = where_condition
@@ -206,12 +266,16 @@ fn format_select_stmt(siblings: &[Node], src: &[u8]) -> String {
         format!("SELECT {}", columns.join(", "))
     };
 
-    let from_clause = format!("FROM {}", table);
     let where_clause = where_condition.as_ref().map(|w| format_where_clause(w));
     let group_clause = group_by_text.as_ref().map(|g| format!("GROUP BY {}", g));
     let order_clause = order_by_text.as_ref().map(|o| format!("ORDER BY {}", o));
 
-    let mut parts: Vec<String> = vec![select_clause, from_clause];
+    // Only emit FROM when a table was actually parsed (e.g. SELECT EXISTS(...)
+    // has no FROM node, so table is empty; emitting "FROM " would corrupt it).
+    let mut parts: Vec<String> = vec![select_clause];
+    if !table.is_empty() {
+        parts.push(format!("FROM {}", table));
+    }
     parts.extend(joins.iter().cloned());
     if let Some(w) = where_clause {
         parts.push(w);

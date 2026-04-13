@@ -1,7 +1,7 @@
 id = "sql-tools"
 name = "SQL Tools"
 schema_version = 1
-version = "0.3.0"
+version = "0.4.0"
 authors = ["kidkender"]
 description = "SQL language support with AST-based formatting and linting."
 repository = "https://github.com/kidkender/zed-sql-tools"

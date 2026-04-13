@@ -163,3 +163,18 @@ fn test_subquery_with_alias_no_warning() {
     let warns: Vec<_> = diags.iter().filter(|d| d.message.contains("alias")).collect();
     assert!(warns.is_empty());
 }
+
+// --- Grammar false positive: LIMIT $n OFFSET $n ---
+
+// Bug: tree-sitter-sequel cannot parse `LIMIT $1 OFFSET $2` and produces an ERROR
+// node — the linter must not report this as a syntax error.
+#[test]
+fn test_limit_offset_params_no_syntax_error() {
+    let diags = lint_sql("SELECT * FROM scenarios ORDER BY created_at DESC LIMIT $1 OFFSET $2");
+    let syntax_errors: Vec<_> = diags.iter().filter(|d| d.is_error && d.message.contains("Syntax error")).collect();
+    assert!(
+        syntax_errors.is_empty(),
+        "false positive syntax error for LIMIT $n OFFSET $n: {:?}",
+        syntax_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

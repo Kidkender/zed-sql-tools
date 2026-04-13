@@ -23,3 +23,7 @@ path = "src/bin/ast_dump.rs"
 [[bin]]
 name = "lsp-test"
 path = "src/bin/lsp_test.rs"
+
+[[bin]]
+name = "format-file"
+path = "src/bin/format_file.rs"

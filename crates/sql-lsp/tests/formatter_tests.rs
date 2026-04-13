@@ -342,3 +342,86 @@ fn test_mixed_case_and_in_where() {
         out
     );
 }
+
+// ── Bug regression ────────────────────────────────────────────────────────────
+
+// Bug: DELETE was reformatted as "SELECT * FROM  WHERE ..." because format_statement
+// saw the "from" child before the "delete" child and dispatched to format_select_stmt.
+#[test]
+fn test_delete_not_corrupted_to_select() {
+    let input = "DELETE FROM scenarios WHERE id = $1::uuid";
+    let out = format_sql(input);
+    assert!(
+        out.to_uppercase().starts_with("DELETE"),
+        "DELETE was corrupted; got: {}",
+        out
+    );
+    assert!(
+        !out.to_uppercase().starts_with("SELECT"),
+        "DELETE was turned into SELECT: {}",
+        out
+    );
+}
+
+// Bug: RETURNING * was silently dropped because it lives as a sibling to the
+// insert/update node inside statement; format_statement returned before seeing it.
+#[test]
+fn test_insert_returning_preserved() {
+    let input = "INSERT INTO steps (id) VALUES ($1) RETURNING *";
+    let out = format_sql(input);
+    assert!(
+        out.to_uppercase().contains("RETURNING"),
+        "RETURNING dropped from INSERT; got: {}",
+        out
+    );
+}
+
+#[test]
+fn test_update_returning_preserved() {
+    let input = "UPDATE steps SET question = $2 WHERE id = $1 RETURNING *";
+    let out = format_sql(input);
+    assert!(
+        out.to_uppercase().contains("RETURNING"),
+        "RETURNING dropped from UPDATE; got: {}",
+        out
+    );
+}
+
+// Bug: SELECT EXISTS(...) has no FROM node; the formatter was generating "FROM "
+// with an empty table, corrupting the query.
+#[test]
+fn test_select_exists_no_from_corruption() {
+    let input = "SELECT EXISTS( SELECT 1 FROM steps WHERE scenario_id = $1 AND order_index = $2 )";
+    let out = format_sql(input);
+    assert!(
+        out.to_uppercase().contains("EXISTS"),
+        "EXISTS lost; got: {}",
+        out
+    );
+    // Must not have a dangling bare "FROM" line with no table name after it
+    // (that was the corruption: "FROM " with empty table at the end).
+    let trailing = out.trim_end();
+    assert!(
+        !trailing.ends_with("FROM") && !trailing.ends_with("FROM "),
+        "dangling bare FROM emitted for no-table SELECT; got: {}",
+        out
+    );
+}
+
+// Bug: LIMIT $1 OFFSET $2 was silently dropped by the formatter because the grammar
+// produces a program-level ERROR node for parameterised LIMIT/OFFSET expressions.
+#[test]
+fn test_limit_offset_params_preserved() {
+    let input = "SELECT * FROM scenarios ORDER BY created_at DESC LIMIT $1 OFFSET $2";
+    let out = format_sql(input);
+    assert!(
+        out.to_uppercase().contains("LIMIT"),
+        "LIMIT was dropped; got: {}",
+        out
+    );
+    assert!(
+        out.to_uppercase().contains("OFFSET"),
+        "OFFSET was dropped; got: {}",
+        out
+    );
+}

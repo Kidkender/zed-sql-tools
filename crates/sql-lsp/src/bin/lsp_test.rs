@@ -179,6 +179,171 @@ fn main() {
     );
     println!("✓ lint: syntax error → error diagnostic");
 
+    // ── test2.sql: DELETE with WHERE → no corruption ─────────────────────────
+    // Send lowercase DELETE to guarantee the formatter has something to change.
+    // Before the fix, "delete from..." was rewritten to "SELECT * FROM  WHERE..."
+    // (no table, SELECT instead of DELETE). After the fix it comes back as
+    // "DELETE FROM steps WHERE id = $1::uuid".
+    let sql6 = "delete from steps where id = $1::uuid";
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":6}},"contentChanges":[{{"text":{text}}}]}}}}"#,
+            uri = uri,
+            text = serde_json::to_string(sql6).unwrap()
+        ),
+    );
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":6,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#,
+            uri = uri
+        ),
+    );
+    let resp = recv(&mut reader);
+    // null result = no change (raw text preserved as-is, which is still correct)
+    // non-null  = formatter applied — must contain DELETE and not SELECT
+    let no_change = resp.contains(r#""result":null"#);
+    let correct_format = resp.to_uppercase().contains("DELETE")
+        && !resp.to_lowercase().contains(r#""newtext":"select"#);
+    assert!(
+        no_change || correct_format,
+        "DELETE was corrupted by formatter:\n{}",
+        resp
+    );
+    println!("✓ format: DELETE preserved (not corrupted to SELECT)");
+
+    // ── test2.sql: INSERT … RETURNING * → RETURNING preserved ────────────────
+    let sql7 = r#"INSERT INTO steps (id, question) VALUES ($1::uuid, $2) RETURNING *"#;
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":7}},"contentChanges":[{{"text":{text}}}]}}}}"#,
+            uri = uri,
+            text = serde_json::to_string(sql7).unwrap()
+        ),
+    );
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#,
+            uri = uri
+        ),
+    );
+    let resp = recv(&mut reader);
+    assert!(
+        resp.to_uppercase().contains("RETURNING"),
+        "RETURNING dropped from INSERT:\n{}",
+        resp
+    );
+    println!("✓ format: INSERT … RETURNING * preserved");
+
+    // ── test2.sql: UPDATE … RETURNING * → RETURNING preserved ────────────────
+    let sql8 = "UPDATE steps SET question = $2 WHERE id = $1::uuid RETURNING *";
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":8}},"contentChanges":[{{"text":{text}}}]}}}}"#,
+            uri = uri,
+            text = serde_json::to_string(sql8).unwrap()
+        ),
+    );
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":8,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#,
+            uri = uri
+        ),
+    );
+    let resp = recv(&mut reader);
+    assert!(
+        resp.to_uppercase().contains("RETURNING"),
+        "RETURNING dropped from UPDATE:\n{}",
+        resp
+    );
+    println!("✓ format: UPDATE … RETURNING * preserved");
+
+    // ── test2.sql: LIMIT $n OFFSET $n → no syntax error diagnostic ───────────
+    let sql9 = "SELECT * FROM steps ORDER BY order_index LIMIT $1 OFFSET $2";
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":9}},"contentChanges":[{{"text":{text}}}]}}}}"#,
+            uri = uri,
+            text = serde_json::to_string(sql9).unwrap()
+        ),
+    );
+    let notif = recv(&mut reader);
+    assert!(
+        notif.contains("publishDiagnostics"),
+        "expected publishDiagnostics:\n{}",
+        notif
+    );
+    // There should be no error-severity diagnostic — only a SELECT * warning
+    assert!(
+        !notif.contains(r#""severity":1"#),
+        "false positive ERROR for LIMIT $n OFFSET $n:\n{}",
+        notif
+    );
+    println!("✓ lint: LIMIT $n OFFSET $n → no false positive syntax error");
+
+    // ── test2.sql: LIMIT $n OFFSET $n → LIMIT preserved in formatted output ──
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":9,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#,
+            uri = uri
+        ),
+    );
+    let resp = recv(&mut reader);
+    assert!(
+        resp.to_uppercase().contains("LIMIT"),
+        "LIMIT dropped by formatter:\n{}",
+        resp
+    );
+    assert!(
+        resp.to_uppercase().contains("OFFSET"),
+        "OFFSET dropped by formatter:\n{}",
+        resp
+    );
+    println!("✓ format: LIMIT $n OFFSET $n preserved");
+
+    // ── test2.sql: SELECT EXISTS(…) → no dangling FROM ───────────────────────
+    let sql10 = "SELECT EXISTS( SELECT 1 FROM steps WHERE scenario_id = $1 AND order_index = $2 )";
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":10}},"contentChanges":[{{"text":{text}}}]}}}}"#,
+            uri = uri,
+            text = serde_json::to_string(sql10).unwrap()
+        ),
+    );
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":10,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#,
+            uri = uri
+        ),
+    );
+    let resp = recv(&mut reader);
+    assert!(
+        resp.to_uppercase().contains("EXISTS"),
+        "EXISTS lost from SELECT EXISTS:\n{}",
+        resp
+    );
+    // The formatted text must not end with a bare "FROM" (empty-table corruption)
+    let formatted_text = resp
+        .split(r#""newText":""#)
+        .nth(1)
+        .unwrap_or("")
+        .trim_end_matches(r#"""#);
+    assert!(
+        !formatted_text.trim_end().ends_with("FROM") && !formatted_text.contains("\\nFROM \\n"),
+        "dangling FROM in SELECT EXISTS output:\n{}",
+        resp
+    );
+    println!("✓ format: SELECT EXISTS(…) no dangling FROM");
+
     // ── shutdown ──────────────────────────────────────────────────────────────
     // lsp-server's handle_shutdown may block waiting for "exit" before
     // returning the shutdown response, so we send both together then

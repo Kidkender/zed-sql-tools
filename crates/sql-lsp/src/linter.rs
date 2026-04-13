@@ -21,6 +21,19 @@ pub fn lint_sql(source: &str) -> Vec<Diagnostic> {
 
 fn walk(node: &Node, src: &[u8], diags: &mut Vec<Diagnostic>) {
     if node.is_error() {
+        // Grammar limitation: `LIMIT $n OFFSET $n` with parameters is not parsed
+        // by tree-sitter-sequel and produces a false positive ERROR node. Suppress
+        // it — the SQL is valid; only the grammar can't represent it.
+        let mut cur = node.walk();
+        let starts_with_limit = node
+            .children(&mut cur)
+            .next()
+            .map(|c| c.kind() == "keyword_limit")
+            .unwrap_or(false);
+        if starts_with_limit {
+            return;
+        }
+
         let raw = node.utf8_text(src).unwrap_or("").trim().to_string();
         let msg = if raw.is_empty() {
             "Syntax error".to_string()
